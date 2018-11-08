@@ -167,7 +167,8 @@ public class NoOpEngineTests extends EngineTestCase {
         IOUtils.close(engine, store);
         final AtomicLong globalCheckpoint = new AtomicLong(SequenceNumbers.NO_OPS_PERFORMED);
         try (Store store = createStore()) {
-            EngineConfig config = config(defaultSettings, store, createTempDir(), newMergePolicy(), null, null, globalCheckpoint::get);
+            Path translogPath = createTempDir();
+            EngineConfig config = config(defaultSettings, store, translogPath, NoMergePolicy.INSTANCE, null, null, globalCheckpoint::get);
             final int numDocs = scaledRandomIntBetween(10, 3000);
             int deletions = 0;
             try (InternalEngine engine = createEngine(config)) {
