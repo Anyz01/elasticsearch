@@ -96,6 +96,7 @@ import org.elasticsearch.xpack.core.ml.action.PutDatafeedAction;
 import org.elasticsearch.xpack.core.ml.action.PutFilterAction;
 import org.elasticsearch.xpack.core.ml.action.PutJobAction;
 import org.elasticsearch.xpack.core.ml.action.RevertModelSnapshotAction;
+import org.elasticsearch.xpack.core.ml.action.RunAnalyticsAction;
 import org.elasticsearch.xpack.core.ml.action.StartDatafeedAction;
 import org.elasticsearch.xpack.core.ml.action.StopDatafeedAction;
 import org.elasticsearch.xpack.core.ml.action.UpdateCalendarJobAction;
@@ -150,6 +151,7 @@ import org.elasticsearch.xpack.ml.action.TransportPutDatafeedAction;
 import org.elasticsearch.xpack.ml.action.TransportPutFilterAction;
 import org.elasticsearch.xpack.ml.action.TransportPutJobAction;
 import org.elasticsearch.xpack.ml.action.TransportRevertModelSnapshotAction;
+import org.elasticsearch.xpack.ml.action.TransportRunAnalyticsAction;
 import org.elasticsearch.xpack.ml.action.TransportStartDatafeedAction;
 import org.elasticsearch.xpack.ml.action.TransportStopDatafeedAction;
 import org.elasticsearch.xpack.ml.action.TransportUpdateCalendarJobAction;
@@ -160,6 +162,9 @@ import org.elasticsearch.xpack.ml.action.TransportUpdateModelSnapshotAction;
 import org.elasticsearch.xpack.ml.action.TransportUpdateProcessAction;
 import org.elasticsearch.xpack.ml.action.TransportValidateDetectorAction;
 import org.elasticsearch.xpack.ml.action.TransportValidateJobConfigAction;
+import org.elasticsearch.xpack.ml.analytics.process.AnalyticsProcessFactory;
+import org.elasticsearch.xpack.ml.analytics.process.AnalyticsProcessManager;
+import org.elasticsearch.xpack.ml.analytics.process.NativeAnalyticsProcessFactory;
 import org.elasticsearch.xpack.ml.datafeed.DatafeedJobBuilder;
 import org.elasticsearch.xpack.ml.datafeed.DatafeedManager;
 import org.elasticsearch.xpack.ml.job.JobManager;
@@ -184,6 +189,7 @@ import org.elasticsearch.xpack.ml.process.NativeControllerHolder;
 import org.elasticsearch.xpack.ml.rest.RestDeleteExpiredDataAction;
 import org.elasticsearch.xpack.ml.rest.RestFindFileStructureAction;
 import org.elasticsearch.xpack.ml.rest.RestMlInfoAction;
+import org.elasticsearch.xpack.ml.rest.analytics.RestRunAnalyticsAction;
 import org.elasticsearch.xpack.ml.rest.calendar.RestDeleteCalendarAction;
 import org.elasticsearch.xpack.ml.rest.calendar.RestDeleteCalendarEventAction;
 import org.elasticsearch.xpack.ml.rest.calendar.RestDeleteCalendarJobAction;
@@ -375,6 +381,7 @@ public class MachineLearning extends Plugin implements ActionPlugin, AnalysisPlu
 
         AutodetectProcessFactory autodetectProcessFactory;
         NormalizerProcessFactory normalizerProcessFactory;
+        AnalyticsProcessFactory analyticsProcessFactory;
         if (MachineLearningField.AUTODETECT_PROCESS.get(settings) && MachineLearningFeatureSet.isRunningOnMlPlatform(true)) {
             try {
                 NativeController nativeController = NativeControllerHolder.getNativeController(environment);
@@ -389,6 +396,7 @@ public class MachineLearning extends Plugin implements ActionPlugin, AnalysisPlu
                     client,
                     clusterService);
                 normalizerProcessFactory = new NativeNormalizerProcessFactory(environment, nativeController);
+                analyticsProcessFactory = new NativeAnalyticsProcessFactory(environment, nativeController);
             } catch (IOException e) {
                 // This also should not happen in production, as the MachineLearningFeatureSet should have
                 // hit the same error first and brought down the node with a friendlier error message
@@ -399,6 +407,7 @@ public class MachineLearning extends Plugin implements ActionPlugin, AnalysisPlu
                     new BlackHoleAutodetectProcess(job.getId());
             // factor of 1.0 makes renormalization a no-op
             normalizerProcessFactory = (jobId, quantilesState, bucketSpan, executorService) -> new MultiplyingNormalizerProcess(1.0);
+            analyticsProcessFactory = (jobId, analyticsProcessConfig, executorService) -> null;
         }
         NormalizerFactory normalizerFactory = new NormalizerFactory(normalizerProcessFactory,
                 threadPool.executor(MachineLearning.UTILITY_THREAD_POOL_NAME));
@@ -419,6 +428,9 @@ public class MachineLearning extends Plugin implements ActionPlugin, AnalysisPlu
         // run node startup tasks
         autodetectProcessManager.onNodeStartup();
 
+        AnalyticsProcessManager analyticsProcessManager = new AnalyticsProcessManager(client, environment, threadPool,
+            analyticsProcessFactory);
+
         return Arrays.asList(
                 mlLifeCycleService,
                 jobResultsProvider,
@@ -428,7 +440,8 @@ public class MachineLearning extends Plugin implements ActionPlugin, AnalysisPlu
                 jobDataCountsPersister,
                 datafeedManager,
                 auditor,
-                new MlAssignmentNotifier(auditor, clusterService)
+                new MlAssignmentNotifier(auditor, clusterService),
+                analyticsProcessManager
         );
     }
 
@@ -513,7 +526,8 @@ public class MachineLearning extends Plugin implements ActionPlugin, AnalysisPlu
             new RestPutCalendarJobAction(settings, restController),
             new RestGetCalendarEventsAction(settings, restController),
             new RestPostCalendarEventAction(settings, restController),
-            new RestFindFileStructureAction(settings, restController)
+            new RestFindFileStructureAction(settings, restController),
+            new RestRunAnalyticsAction(settings, restController)
         );
     }
 
@@ -571,7 +585,8 @@ public class MachineLearning extends Plugin implements ActionPlugin, AnalysisPlu
                 new ActionHandler<>(GetCalendarEventsAction.INSTANCE, TransportGetCalendarEventsAction.class),
                 new ActionHandler<>(PostCalendarEventsAction.INSTANCE, TransportPostCalendarEventsAction.class),
                 new ActionHandler<>(PersistJobAction.INSTANCE, TransportPersistJobAction.class),
-                new ActionHandler<>(FindFileStructureAction.INSTANCE, TransportFindFileStructureAction.class)
+                new ActionHandler<>(FindFileStructureAction.INSTANCE, TransportFindFileStructureAction.class),
+                new ActionHandler<>(RunAnalyticsAction.INSTANCE, TransportRunAnalyticsAction.class)
         );
     }
     @Override
